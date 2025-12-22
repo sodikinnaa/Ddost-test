@@ -1,0 +1,20 @@
+services:
+  pie:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pie-app
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    volumes:
+      # Mount seluruh direktori untuk development (perubahan file langsung terlihat)
+      - .:/app
+      # Mount .git folder secara terpisah untuk Git operations
+      - ./.git:/app/.git:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    # Network mode host untuk akses socket langsung (opsional)
+    # network_mode: host
+

