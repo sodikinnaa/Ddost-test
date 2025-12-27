@@ -5,14 +5,14 @@ import requests
 url = "https://beraffiliate.com/"
 
 def tugas(nama):
-    for i in range(100):
+    for i in range(5):
         response = requests.get(url)
         print(f"{nama} jalan ke-{i} {response.status_code}")
 
 threads = []
 
 # buat & start thread
-for i in range(10):
+for i in range(1000):
     t1 = threading.Thread(target=tugas, args=(f"Thread-1-{i}",))
     t2 = threading.Thread(target=tugas, args=(f"Thread-2-{i}",))
 
